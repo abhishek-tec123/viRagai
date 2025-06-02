@@ -16,5 +16,5 @@ motor
 pymongo
 python-multipart
 faiss-cpu
-numpy==1.26.4
 uvicorn
+numpy==1.26.4
