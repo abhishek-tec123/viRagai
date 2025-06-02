@@ -23,7 +23,7 @@ MONGO_URI = os.getenv("MONGODB_URI")
 DB_NAME = os.getenv("DB_NAME")
 COLLECTION_NAME = os.getenv("COLLECTION_NAME")
 EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
-VECTOR_STORE_BASE_DIR = os.getenv("VECTOR_STORE_BASE_DIR", "./vectorstores")
+VECTOR_STORE_BASE_DIR = os.getenv("VECTOR_STORE_BASE_DIR", "/tmp/vectorstores")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 # -------------------------

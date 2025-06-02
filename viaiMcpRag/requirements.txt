@@ -17,4 +17,5 @@ pymongo
 python-multipart
 faiss-cpu
 uvicorn
+gunicorn
 numpy==1.26.4
