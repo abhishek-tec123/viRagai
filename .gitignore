@@ -10,6 +10,5 @@ wheels/
 .envviai
 .env
 viaiMcpRag/vector_stores
-.queryUtils.py
-.ragClient.py
-.ragServer.py
+.utils
+
