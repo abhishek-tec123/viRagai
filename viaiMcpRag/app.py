@@ -1,10 +1,9 @@
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException,Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from typing import Optional
 import os, shutil
 from langchain.docstore.document import Document
-
+from context import summarize_extracted_text
 from fileUploader_Utils import FileUploader
 from vectorstore_utils import (
     VectorStoreBuilder,
@@ -15,48 +14,84 @@ from vectorstore_utils import (
 from queryResponse import (
     download_and_save_vector_store_by_folder,
     load_vector_store,
-    pipeline_query_with_groq,
+    pipeline_query_with_llm,
     batch_process_queries
 )
+import logging
+import tiktoken
+
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger(__name__)
 
 app = FastAPI()
+
+def count_tokens(text: str) -> int:
+    """Count tokens in text using tiktoken"""
+    encoding = tiktoken.get_encoding("cl100k_base")
+    return len(encoding.encode(text))
 
 # ============================
 # Upload Endpoint
 # ============================
 @app.post("/upload/")
 async def upload_and_process(
-    file: Optional[UploadFile] = File(None),
-    url: Optional[str] = Form(None),
+    files: list[UploadFile] = File(None),
+    urls: list[str] = Form(None),
     user_id: str = Form(...),
-    folder_id: str = Form(...)
+    folder_id: str = Form(...),
+    llm_provider: str = Form("groq")  # Default to groq for backward compatibility
 ):
     print(f"\n[Upload Process] Starting upload process for user_id: {user_id}, folder_id: {folder_id}")
-    if not file and not url:
-        print("[Upload Process] Error: Neither file nor URL provided")
-        raise HTTPException(status_code=400, detail="Either file or URL must be provided.") 
+    if not files and not urls:
+        print("[Upload Process] Error: Neither files nor URLs provided")
+        raise HTTPException(status_code=400, detail="Either files or URLs must be provided.") 
     try:
         uploader = FileUploader()
+        combined_text = ""
+        source_names = []
 
-        if file:
-            print(f"[Upload Process] Processing file: {file.filename}")
-            temp_path = file.filename
-            with open(temp_path, "wb") as buffer:
-                shutil.copyfileobj(file.file, buffer)
-            text = uploader.load_file(temp_path)
-            os.remove(temp_path)
-            source_name = file.filename
-            print(f"[Upload Process] File processed successfully: {source_name}")
+        # Process files if provided
+        if files:
+            for file in files:
+                print(f"[Upload Process] Processing file: {file.filename}")
+                temp_path = file.filename
+                with open(temp_path, "wb") as buffer:
+                    shutil.copyfileobj(file.file, buffer)
+                text = uploader.load_file(temp_path)
+                os.remove(temp_path)
+                combined_text += f"\n\n=== Content from {file.filename} ===\n{text}"
+                source_names.append(file.filename)
+                print(f"[Upload Process] File processed successfully: {file.filename}")
 
-        else:
-            print(f"[Upload Process] Processing URL: {url}")
-            text = uploader.extract_text_from_url(url)
-            source_name = os.path.basename(url)
-            print(f"[Upload Process] URL processed successfully: {source_name}")
+        # Process URLs if provided
+        if urls:
+            for url in urls:
+                print(f"[Upload Process] Processing URL: {url}")
+                text = uploader.extract_text_from_url(url)
+                source_name = os.path.basename(url)
+                combined_text += f"\n\n=== Content from {source_name} ===\n{text}"
+                source_names.append(source_name)
+                print(f"[Upload Process] URL processed successfully: {source_name}")
+        
+        # Log original text token count
+        original_tokens = count_tokens(combined_text)
+        log.info(f"[Upload Process] Original document token count: {original_tokens:,} tokens")
+        
+        # Summarize the combined text
+        print(f"[Upload Process] Summarizing combined text")
+        summary = await summarize_extracted_text(combined_text, llm_provider=llm_provider)
+        print(f"[Upload Process] Summary: {summary}")
+
+        # Log summary token count
+        summary_tokens = count_tokens(summary)
+        log.info(f"[Upload Process] Summary token count: {summary_tokens:,} tokens")
+        log.info(f"[Upload Process] Token reduction ratio: {summary_tokens/original_tokens:.2%}")
+        log.info(f"[Upload Process] Original vs Summary tokens: {original_tokens:,} → {summary_tokens:,} tokens")
 
         print("[Upload Process] Creating vector store")
-        builder = VectorStoreBuilder(file_name=source_name, folder_id=folder_id)
-        document = Document(page_content=text, metadata={"source": source_name})
+        builder = VectorStoreBuilder(file_name="combined_documents", folder_id=folder_id)
+        document = Document(page_content=summary, metadata={"source": ", ".join(source_names)})
         split_docs = builder.split_documents([document])
         print(f"[Upload Process] Documents split into {len(split_docs)} chunks")
         
@@ -77,7 +112,7 @@ async def upload_and_process(
             metadata={
                 "vectorstore_info": vectorstore_info,
                 "document_info": {
-                    "source": source_name,
+                    "sources": source_names,
                     "chunks": len(split_docs),
                     "chunk_size": builder.chunk_size,
                     "chunk_overlap": builder.chunk_overlap
@@ -96,7 +131,8 @@ async def upload_and_process(
             "mongo_id": mongo_id,
             "user_id": user_id,
             "folder_id": folder_id,
-            "vectorstore_info": vectorstore_info
+            "vectorstore_info": vectorstore_info,
+            "sources": source_names
         })
 
     except Exception as e:
@@ -191,6 +227,7 @@ class QueryRequest(BaseModel):
     user_id: str
     folder_id: str
     batch_mode: bool = False
+    llm_provider: str = "groq"  # Default to groq for backward compatibility
 
 @app.post("/query/")
 async def query_documents(request: QueryRequest):
@@ -200,7 +237,8 @@ async def query_documents(request: QueryRequest):
         "query": "string",
         "user_id": "string",
         "folder_id": "string",
-        "batch_mode": "boolean"
+        "batch_mode": "boolean",
+        "llm_provider": "string"
     })
 
     # Print actual received values
@@ -212,6 +250,7 @@ async def query_documents(request: QueryRequest):
     user_id = request.user_id
     folder_id = request.folder_id
     batch_mode = request.batch_mode
+    llm_provider = request.llm_provider
 
     print(f"\n[Query Process] Starting query process for user_id: {user_id}, folder_id: {folder_id}")
     try:
@@ -224,10 +263,10 @@ async def query_documents(request: QueryRequest):
         if batch_mode:
             print("[Query Process] Processing batch queries")
             queries = query.split('\n')
-            results = await batch_process_queries(retriever, queries, user_id, folder_id)
+            results = await batch_process_queries(retriever, queries, user_id, folder_id, llm_provider)
         else:
             print("[Query Process] Processing single query")
-            results = await pipeline_query_with_groq(retriever, query, user_id, folder_id)
+            results = await pipeline_query_with_llm(retriever, query, user_id, folder_id, llm_provider)
         
         print("[Query Process] Query completed successfully")
         return JSONResponse(content=results)
@@ -237,9 +276,3 @@ async def query_documents(request: QueryRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# if __name__ == "__main__":
-#     import uvicorn
-#     import os
-
-#     port = int(os.environ.get("PORT", 8000))  # Use PORT from env or default to 8000
-#     uvicorn.run("app:app", host="0.0.0.0", port=port, reload=True)

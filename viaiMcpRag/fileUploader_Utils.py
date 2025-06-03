@@ -47,7 +47,7 @@ class FileUploader:
 
 
     def extract_text_from_url(self, url):
-        print(f"Scraping URL: {url}")
+        print(f"Scraping URL or downloading file: {url}")
         headers = {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -58,17 +58,44 @@ class FileUploader:
         response = requests.get(url, headers=headers)
         response.raise_for_status()
 
-        soup = BeautifulSoup(response.text, "html.parser")
+        content_type = response.headers.get("Content-Type", "")
+        filename = url.split("/")[-1].split("?")[0]  # Get filename from URL
 
-        # Remove script and style elements
-        for tag in soup(["script", "style"]):
-            tag.decompose()
+        if "application/pdf" in content_type or filename.lower().endswith(".pdf"):
+            print("Detected PDF file, processing as document...")
+            return self.extract_text_from_upload(filename, BytesIO(response.content))
 
-        text = soup.get_text(separator="\n")
-        cleaned_text = "\n".join(line.strip() for line in text.splitlines() if line.strip())
+        elif "application/vnd.openxmlformats-officedocument" in content_type or filename.lower().endswith((".docx", ".xlsx", ".xls")):
+            print("Detected Office file, processing as document...")
+            return self.extract_text_from_upload(filename, BytesIO(response.content))
+            
+        elif "application/msword" in content_type or filename.lower().endswith(".doc"):
+            error_msg = (
+                "The file is in the old .doc format (Microsoft Word 97-2003). "
+                "Please convert it to .docx format (Microsoft Word 2007+) and try again. "
+                "You can do this by opening the file in Microsoft Word and saving it as .docx, "
+                "or using an online converter."
+            )
+            raise ValueError(error_msg)
 
-        print(f"Extracted {self.count_tokens(cleaned_text)} tokens from URL.")
-        return cleaned_text
+        elif "text/html" in content_type:
+            print("Detected HTML content, processing as webpage...")
+            soup = BeautifulSoup(response.text, "html.parser")
+            for tag in soup(["script", "style"]):
+                tag.decompose()
+
+            text = soup.get_text(separator="\n")
+            cleaned_text = "\n".join(line.strip() for line in text.splitlines() if line.strip())
+            print(f"Extracted {self.count_tokens(cleaned_text)} tokens from URL.")
+            return cleaned_text
+
+        else:
+            error_msg = (
+                f"Unsupported content type: {content_type}. "
+                "Supported formats are: PDF (.pdf), Word (.docx), Excel (.xlsx, .xls), and HTML."
+            )
+            raise ValueError(error_msg)
+
 
 
     def load_file(self, file_path_or_url):

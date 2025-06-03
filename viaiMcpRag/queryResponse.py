@@ -2,7 +2,7 @@ import os
 from vectorstore_utils import unzip_to_memory
 import logging
 from typing import Dict, Any
-from context import generate_response_from_groq
+from context import generate_response_from_llm
 from pymongo.errors import ConnectionFailure
 from fastapi import HTTPException
 from dotenv import load_dotenv
@@ -23,7 +23,7 @@ MONGO_URI = os.getenv("MONGODB_URI")
 DB_NAME = os.getenv("DB_NAME")
 COLLECTION_NAME = os.getenv("COLLECTION_NAME")
 EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
-VECTOR_STORE_BASE_DIR = os.getenv("VECTOR_STORE_BASE_DIR", "/tmp/vectorstores")
+VECTOR_STORE_BASE_DIR = os.getenv("VECTOR_STORE_BASE_DIR", "./vectorstores")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 # -------------------------
@@ -139,7 +139,7 @@ def load_vector_store(vector_store_path: str):
 # -------------------------
 # Combined Pipeline
 # -------------------------
-async def pipeline_query_with_groq(retriever, query: str, user_id: str, folder_id: str) -> Dict[str, Any]:
+async def pipeline_query_with_llm(retriever, query: str, user_id: str, folder_id: str, llm_provider: str = "groq") -> Dict[str, Any]:
     log.info(f"Running query: '{query}'")
     docs = await asyncio.to_thread(retriever.invoke, query)
     if not docs:
@@ -156,7 +156,8 @@ async def pipeline_query_with_groq(retriever, query: str, user_id: str, folder_i
         }
 
     combined_text = "\n\n".join(doc.page_content for doc in docs)
-    response = await generate_response_from_groq(input_text=combined_text, query=query)
+    log.info(f"Retrieved {len(docs)} documents for query processing")
+    response = await generate_response_from_llm(input_text=combined_text, query=query, llm_provider=llm_provider)
     
     return {
         "status": "success",
@@ -176,8 +177,8 @@ async def pipeline_query_with_groq(retriever, query: str, user_id: str, folder_i
 # -------------------------
 # Batch Processing
 # -------------------------
-async def batch_process_queries(retriever, queries: list[str], user_id: str, folder_id: str) -> list[Dict[str, Any]]:
-    tasks = [pipeline_query_with_groq(retriever, query, user_id, folder_id) for query in queries]
+async def batch_process_queries(retriever, queries: list[str], user_id: str, folder_id: str, llm_provider: str = "groq") -> list[Dict[str, Any]]:
+    tasks = [pipeline_query_with_llm(retriever, query, user_id, folder_id, llm_provider) for query in queries]
     return await asyncio.gather(*tasks)
 
 # # -------------------------

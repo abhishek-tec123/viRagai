@@ -3,7 +3,7 @@
 import io
 import os
 import zipfile
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, Any
 from pymongo import MongoClient
 from bson import ObjectId
@@ -11,6 +11,7 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
 from dotenv import load_dotenv
+import logging as log
 
 load_dotenv()
 
@@ -20,8 +21,13 @@ COLLECTION_NAME = os.getenv("COLLECTION_NAME")
 VECTOR_STORE_BASE_DIR = os.getenv("VECTOR_STORE_BASE_DIR", "./vectorstores")
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 
+# Add these constants at the top with other constants
+MAX_VECTOR_STORE_SIZE = 100 * 1024 * 1024  # 100MB per vector store
+MAX_USER_STORAGE = 1024 * 1024 * 1024  # 1GB per user
+STORAGE_TTL_DAYS = 1  # Vector stores older than this will be archived
+
 class VectorStoreBuilder:
-    def __init__(self, file_name: str, folder_id: str, chunk_size=2500, chunk_overlap=500):
+    def __init__(self, file_name: str, folder_id: str, chunk_size=100, chunk_overlap=25):
         print(f"\n[VectorStoreBuilder] Initializing with file: {file_name}, folder_id: {folder_id}")
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
@@ -29,6 +35,7 @@ class VectorStoreBuilder:
         base_name = os.path.splitext(os.path.basename(file_name))[0]
         self.persist_dir = f"VDB_{base_name}_{folder_id}"
         print(f"[VectorStoreBuilder] Using embedding model: {EMBEDDING_MODEL}")
+        log.info(f"[VectorStoreBuilder] Initializing embedding model: {EMBEDDING_MODEL}")
         self.embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL)
         self._vectorstore = None
 
@@ -40,18 +47,21 @@ class VectorStoreBuilder:
         )
         split_docs = text_splitter.split_documents(documents)
         print(f"[VectorStoreBuilder] Split documents into {len(split_docs)} chunks")
+        log.info(f"[VectorStoreBuilder] Document split into {len(split_docs)} chunks with size {self.chunk_size} and overlap {self.chunk_overlap}")
         return split_docs
 
     def create_vectorstore(self, documents):
         print("[VectorStoreBuilder] Creating vector store")
         persist_path = os.path.join(os.getcwd(), self.persist_dir)
         print(f"[VectorStoreBuilder] Persist path: {persist_path}")
+        log.info(f"[VectorStoreBuilder] Creating vector store using {EMBEDDING_MODEL} embeddings")
         vectorstore = FAISS.from_documents(
             documents=documents,
             embedding=self.embeddings
         )
         vectorstore.save_local(folder_path=persist_path)
         print("[VectorStoreBuilder] Vector store created and saved successfully")
+        log.info("[VectorStoreBuilder] Vector store created and saved successfully")
         self._vectorstore = vectorstore
         return vectorstore
 
@@ -89,7 +99,52 @@ class VectorStoreBuilder:
         print("[VectorStoreBuilder] Zip archive created successfully")
         return zip_buffer.getvalue()
 
+def check_storage_limits(user_id: str, new_store_size: int) -> bool:
+    """Check if adding new vector store would exceed user's storage limit"""
+    client = MongoClient(MONGO_URI)
+    db = client[DB_NAME]
+    collection = db[COLLECTION_NAME]
+    
+    # Get total storage for user
+    user_stores = collection.find({"user_id": user_id})
+    total_size = sum(store.get("size", 0) for store in user_stores)
+    
+    return total_size + new_store_size <= MAX_USER_STORAGE
+
+def cleanup_old_stores():
+    """Archive or delete vector stores older than TTL"""
+    client = MongoClient(MONGO_URI)
+    db = client[DB_NAME]
+    collection = db[COLLECTION_NAME]
+    
+    cutoff_date = datetime.utcnow() - timedelta(days=STORAGE_TTL_DAYS)
+    old_stores = collection.find({
+        "created_at": {"$lt": cutoff_date},
+        "last_accessed": {"$lt": cutoff_date}
+    })
+    
+    for store in old_stores:
+        # Archive to cold storage or delete
+        collection.update_one(
+            {"_id": store["_id"]},
+            {"$set": {"status": "archived"}}
+        )
+
+def update_store_access_time(mongo_id: str):
+    """Update last accessed time for vector store"""
+    client = MongoClient(MONGO_URI)
+    db = client[DB_NAME]
+    collection = db[COLLECTION_NAME]
+    
+    collection.update_one(
+        {"_id": ObjectId(mongo_id)},
+        {"$set": {"last_accessed": datetime.utcnow()}}
+    )
+
 def store_in_mongodb(zip_data: bytes, user_id: str, folder_id: str, metadata: Dict[str, Any]) -> str:
+    if not check_storage_limits(user_id, len(zip_data)):
+        raise ValueError("Storage limit exceeded for user")
+        
     print(f"\n[StoreMongoDB] Storing vector store for user_id: {user_id}, folder_id: {folder_id}")
     client = MongoClient(MONGO_URI)
     print("[MONGO_Client]", MONGO_URI)
@@ -102,8 +157,11 @@ def store_in_mongodb(zip_data: bytes, user_id: str, folder_id: str, metadata: Di
         "user_id": user_id,
         "folder_id": folder_id,
         "created_at": datetime.utcnow(),
+        "last_accessed": datetime.utcnow(),
         "metadata": metadata,
-        "vector_store": zip_data
+        "vector_store": zip_data,
+        "size": len(zip_data),
+        "status": "active"
     }
 
     print("[StoreMongoDB] Updating/inserting document in MongoDB")

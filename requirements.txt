@@ -2,6 +2,7 @@ langchain
 langchain-community
 langchain-groq
 langchain-huggingface
+langchain-openai
 tiktoken
 beautifulsoup4
 lxml
