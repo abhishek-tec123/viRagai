@@ -10,5 +10,5 @@ wheels/
 .envviai
 .env
 viaiMcpRag/vector_stores
-.utils
+utils
 
