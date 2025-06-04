@@ -12,6 +12,7 @@ from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
 from dotenv import load_dotenv
 import logging as log
+from embedding_model import get_model
 
 load_dotenv()
 
@@ -35,8 +36,9 @@ class VectorStoreBuilder:
         base_name = os.path.splitext(os.path.basename(file_name))[0]
         self.persist_dir = f"VDB_{base_name}_{folder_id}"
         print(f"[VectorStoreBuilder] Using embedding model: {EMBEDDING_MODEL}")
-        log.info(f"[VectorStoreBuilder] Initializing embedding model: {EMBEDDING_MODEL}")
-        self.embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL)
+        log.info(f"[VectorStoreBuilder] Using preloaded embedding model")
+        # Use the preloaded model from embedding_model module
+        self.embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL, model=get_model())
         self._vectorstore = None
 
     def split_documents(self, documents):

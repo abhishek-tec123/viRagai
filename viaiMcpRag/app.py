@@ -19,12 +19,23 @@ from queryResponse import (
 )
 import logging
 import tiktoken
+from embedding_model import initialize_model
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
 app = FastAPI()
+
+@app.on_event("startup")
+async def startup_event():
+    log.info("Initializing application...")
+    try:
+        initialize_model()
+        log.info("Application initialized successfully")
+    except Exception as e:
+        log.error(f"Error during application initialization: {str(e)}")
+        raise e
 
 def count_tokens(text: str) -> int:
     """Count tokens in text using tiktoken"""
