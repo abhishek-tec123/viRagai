@@ -26,76 +26,40 @@ def truncate_to_token_limit(text: str, max_tokens: int = 30000, buffer: int = 50
     max_chars = (max_tokens - buffer) * 4
     return text[:max_chars]
 
-import re
-import logging
+async def generate_response_from_llm(input_text: str, query: str = "", custom_prompt: str = None, llm_provider: str = "groq") -> str:
+    # Check if the query is a greeting
+    greeting_patterns = [
+        r'^hi\b', r'^hello\b', r'^hey\b', r'^greetings\b',
+        r'^good\s+(morning|afternoon|evening)\b',
+        r'^howdy\b', r'^sup\b', r'^yo\b'
+    ]
+    
+    if any(re.search(pattern, query.lower()) for pattern in greeting_patterns):
+        return "Hello! I'm your AI assistant. How can I help you today?"
 
-log = logging.getLogger(__name__)
+    base_prompt = custom_prompt or (
+        "You are an expert query solver. If you cannot find any relevant information to answer the query, simply respond with 'No data found' without any explanation. "
+        "Otherwise, provide a concise response in a short clear, informative paragraph. "
+        "The paragraph must be 2 to 3 lines maximum. "
+        "Avoid introductions and focus strictly on essential facts and core ideas."
+    )
 
-def is_greeting(query: str) -> bool:
-    """Detects if the user query is a greeting."""
-    greetings = ["hello", "hi", "hey", "greetings", "good morning", "good afternoon", "good evening"]
-    return query.lower().strip() in greetings
-
-async def generate_response_from_llm(
-    input_text: str,
-    query: str = "",
-    custom_prompt: str = None,
-    llm_provider: str = "groq"
-) -> str:
-    if is_greeting(query):
-        return "Hello! How can I assist you today."
-
-    # Dynamic prompt based on provider
-    if custom_prompt:
-        base_prompt = custom_prompt
-    elif llm_provider.lower() == "openai":
-        base_prompt = (
-            "You are an expert query solver. Provide a concise response using only the information in the data. "
-            "Use the JSON data when available,"
-            "If the query is not addressed, say that the information is not found in the data."
-        )
-    else:
-        base_prompt = (
-            "You are an expert query solver. Provide a concise response using only the information in the data. "
-            "Do not use general knowledge or define topics unless explicitly mentioned. "
-            "If the query is not addressed, say that the information is not found in the data."
-        )
-
+    # Get the appropriate LLM provider
     provider = get_llm_provider(llm_provider)
     log.info(f"Using {llm_provider} provider for response generation")
 
+    # Truncate input to avoid exceeding token limits
     truncated_input = truncate_to_token_limit(input_text)
+
     full_input = f"{base_prompt}\n\nUser Query: {query}\n\nJSON Data:\n{truncated_input}"
 
+    # Generate response using the provider
     response = await provider.generate_response(full_input)
+
+    # Clean the response: remove newlines, tabs, excessive whitespace, and unwanted characters
     cleaned_response = re.sub(r'\s+', ' ', response).strip()
-
-    fallback_patterns = [
-        r"\b(not mentioned|not found|does not appear|no relevant data|cannot find)\b",
-        r"(?i)this appears to be",
-        r"(?i)data.*seems.*about",
-        r"(?i)i cannot find"
-    ]
-
-    if any(re.search(pattern, cleaned_response) for pattern in fallback_patterns):
-        log.warning("Fallback detected, generating concise document title.")
-
-        # Prompt to request only a short title
-        fallback_prompt = (
-            "Return only a short, clear title (2 to 5 words) that summarizes the overall content of the document. "
-            "Do not include explanations or extra context. Only return the title."
-        )
-        fallback_input = f"{fallback_prompt}\n\nJSON Data:\n{truncated_input}"
-        fallback_summary = await provider.generate_response(fallback_input)
-        fallback_summary = re.sub(r'\s+', ' ', fallback_summary).strip().strip('"').strip('.')
-
-        return (
-            "no data found for your query."
-            # + fallback_summary
-        )
-
+    
     return cleaned_response
-
 
 async def summarize_extracted_text(input_text: str, custom_prompt: str = None, llm_provider: str = "groq") -> str:
     summarization_prompt = custom_prompt or (
